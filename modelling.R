@@ -8,16 +8,21 @@
 #load libraries
 source("scripts/libraries.R")
 
-#load data
-data <- readRDS("output/featureData.rds")
 
 ##### Controls ################################################################
 
-country <- "BE"
-sampleSize <- 3000
-algorithm <- "xgbTree" 
+#Adjust below:
+dataSet <- "output/featureData.rds"  #combined dataset @ spotconnector level
+CSdataSet <- "output/chargeStatDataP0DF.RDS"  #charging station table data
+country <- "LU"
+sampleSize <- 2000
+algorithm <- "rf" 
 
-countryList = c("NL", "BE", "LU", "NO", "SE")
+#All countries of interest
+countryList = c("NL", "BE", "LU")
+
+#load data
+data <- readRDS(dataSet)
 
 ##### MODELLING PREPARATION ###################################################
 
@@ -45,6 +50,8 @@ trainIndex <- createDataPartition(subData$public_access_type_id,
                                   p = 0.75, list = FALSE)
 
 training <- subData[ trainIndex,]
+training <- training %>% select(-chargingstation_id)
+
 testing  <- subData[-trainIndex,]
 
 #creating other country testing sets
@@ -60,7 +67,14 @@ for (countryCode in otherCountries){
 }
 
 #plot dependent variable distribution
-for (countryCode in countryList){
+
+plotCommand <- paste0("plot(testing$public_access_type_id,",
+                      "main = '",
+                      country,
+                      "')")
+eval(parse(text = plotCommand))
+
+for (countryCode in otherCountries){
         plotCommand <- paste0("plot(",
                               countryCode,
                               "test$public_access_type_id,",
@@ -82,7 +96,7 @@ system.time(model <- train(public_access_type_id ~ .,
 model
 
 
-##### PREDICTIONS #############################################################
+##### Spot Conn Level PREDICTIONS #############################################
 
 #Predictions
 preds <- predict(model, testing)
@@ -105,7 +119,8 @@ for (countryCode in otherCountries){
 ##### SPOT CONN LEVEL METRICS #################################################
 
 #spot conn level Metrics
-mets <- postResample(pred = testing$preds, obs = testing$public_access_type_id)
+mets <- postResample(pred = testing$preds, 
+                     obs = testing$public_access_type_id)
 mets
 
 #other country spot conn level Metrics
@@ -119,7 +134,7 @@ for (countryCode in otherCountries){
         eval(parse(text = metCommand))
 }
 
-##### Confusion Matrix ########################################################
+##### SPOT CONN LEVEL Confusion Matrix ########################################
 
 #Confusion Matrix
 confMat <- confusionMatrix(testing$preds,testing$public_access_type_id)
@@ -136,10 +151,12 @@ for (countryCode in otherCountries){
 }
 
 
-##### OUTCOMES ################################################################
+##### SPOT CONN LEVEL OUTCOMES ################################################
 
 #column names
-outcomeCols <- c("trainCountry", "testCountry", "algorithm", "accuracy", "kappa", "publicSpecificity")
+outcomeCols <- c("trainCountry", "testCountry", 
+                 "algorithm", "accuracy", 
+                 "kappa", "publicSpecificity")
 
 #observations for modelling country
 testOutcome <- c(
@@ -175,9 +192,164 @@ for (countryCode in otherCountries){
 }
 outcome
 
-filepath <- paste0("output/",country,"_", algorithm, "_metrics.rds")
+filepath <- paste0("output/",country,"_", algorithm, "_spotConnmetrics.rds")
 
 saveRDS(outcome, file = filepath)
 
 
+##### Charging Station Level Predictions ######################################
+
+#convert to charging station level with group_by on chargingstation_id
+CStesting <- testing %>% 
+        group_by(chargingstation_id) %>% 
+        summarise(CSpredsPrep = paste(unique(preds), collapse = ', '))
+
+###repeat for other countries
+for (countryCode in otherCountries){
+        CStestCommand <- paste0("CS",
+                                countryCode,
+                                "test <- ",
+                                countryCode,
+                                "test %>% group_by(chargingstation_id) ",
+                                "%>% summarise(CS",
+                                countryCode, 
+                                "predsPrep = ",
+                                "paste(unique(preds), collapse = ', '))")
+        eval(parse(text = CStestCommand))
+}
+
+#load charging station table and recode dependent variable
+CSdata <- readRDS(CSdataSet)
+CSdata <- CSdata %>% rename(id = ï..id)
+CSdata$public_access_type_id <- CSdata$public_access_type_id %>% 
+        recode('1' = "public",'2' = "private",'3' = "company") %>% 
+        as.factor()
+
+#subset charging station table to relevant country (by chargingstation_id)
+CSdataTest <- CSdata %>% filter(id %in% CStesting$chargingstation_id)
+
+#repeat for other countries
+for (countryCode in otherCountries){
+        CSsubsetCommand <- paste0("CS",
+                                  countryCode,
+                                  "data <- CSdata %>% filter(id %in% CS",
+                                  countryCode,
+                                  "test$chargingstation_id)")
+        eval(parse(text = CSsubsetCommand))
+}
+
+#convert all double entries to "private"
+CSlength <- nchar(CStesting$CSpredsPrep)
+CStesting$CSpreds <- ifelse(CSlength > 7, "private", CStesting$CSpredsPrep) %>% as.factor()
+
+CStesting$CSpredsPrep <- CStesting$CSpredsPrep %>% as.factor()
+CStesting$CSpreds <- CStesting$CSpreds %>% as.factor()
+
+#repeat for other countries
+for (countryCode in otherCountries){
+        CSlengthCommand <- paste0("CS",
+                                  countryCode,
+                                  "length <- nchar(CS",
+                                  countryCode,
+                                  "test$CS",
+                                  countryCode,
+                                  "predsPrep)")
+        eval(parse(text = CSlengthCommand))
+}
+
+for (countryCode in otherCountries){
+        CSrecodeCommand <- paste0("CS",countryCode,
+                                  "test$CSpreds <- ifelse(CS", 
+                                  countryCode, 
+                                  "length > 7, 'private', CS", 
+                                  countryCode, 
+                                  "test$CS", 
+                                  countryCode,
+                                  "predsPrep)",
+                                  "%>% as.factor()")
+        eval(parse(text = CSrecodeCommand))
+}
+
+
+##### Charging Station Level Metrics ##########################################
+
+#Metrics
+CSmets <- postResample(pred = CStesting$CSpreds, 
+                       obs = CSdataTest$public_access_type_id)
+
+#repeat for other countries
+for (countryCode in otherCountries){
+        CSmetsCommand <- paste0("CS",
+                                countryCode, 
+                                "mets <- postResample(pred = CS", 
+                                countryCode, 
+                                "test$CSpreds,obs = CS", 
+                                countryCode, 
+                                "data$public_access_type_id)")
+        eval(parse(text = CSmetsCommand))
+}
+
+
+##### Charging Station Level confusion matrix #################################
+
+#Confusion Matrix
+CSconfMat <- confusionMatrix(CStesting$CSpreds,
+                             CSdataTest$public_access_type_id)
+
+#repeat for other countries
+
+for (countryCode in otherCountries){
+        CSconfMatCommand <- paste0("CS",
+                                   countryCode,
+                                   "confMat <- confusionMatrix(CS",
+                                   countryCode, 
+                                   "test$CSpreds,CS", 
+                                   countryCode,
+                                   "data$public_access_type_id)")
+        eval(parse(text = CSconfMatCommand))
+}
+
+##### Charging Station Level OUTCOMES ################################################
+
+#column names
+CSoutcomeCols <- c("trainCountry", "testCountry", 
+                 "algorithm", "accuracy", 
+                 "kappa", "publicSpecificity")
+
+#observations for modelling country
+CStestOutcome <- c(
+        country,
+        country,
+        algorithm,
+        CSmets[[1]],
+        CSmets[[2]],
+        CSconfMat$byClass[3,2]
+)
+CStestOutcome
+
+#create dataframe
+CSoutcome <- data.frame(matrix(ncol = 5, nrow = 0))
+CSoutcome <- CSoutcome %>% rbind(testOutcome)
+colnames(CSoutcome) <- CSoutcomeCols
+
+#add other country observations
+for (countryCode in otherCountries){
         
+        CScAccCommand <- paste0("CS", countryCode, "mets[[1]]")
+        CScKappaCommand <- paste0("CS", countryCode, "mets[[2]]")
+        CScSpecCommand <- paste0("CS", countryCode, "confMat$byClass[3,2]")
+        
+        CSotherOut <- data.frame(paste0(country), 
+                               paste0(countryCode),
+                               paste0(algorithm),
+                               paste0(eval(parse(text = CScAccCommand))),
+                               paste0(eval(parse(text = CScKappaCommand))),
+                               paste0(eval(parse(text = CScSpecCommand))))
+        colnames(CSotherOut) <- CSoutcomeCols
+        CSoutcome <- CSoutcome %>% rbind(CSotherOut)
+}
+CSoutcome
+
+filepath <- paste0("output/",country,"_", algorithm, "_chargeStatmetrics.rds")
+
+saveRDS(outcome, file = filepath)
