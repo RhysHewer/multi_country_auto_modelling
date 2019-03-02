@@ -15,7 +15,7 @@ source("scripts/libraries.R")
 dataSet <- "output/featureData.rds"  #combined dataset @ spotconnector level
 CSdataSet <- "output/chargeStatDataP0DF.RDS"  #charging station table data
 country <- "LU"
-sampleSize <- 2000
+sampleSize <- 3000
 algorithm <- "rf" 
 
 #All countries of interest
@@ -317,7 +317,7 @@ CSoutcomeCols <- c("trainCountry", "testCountry",
                  "kappa", "publicSpecificity")
 
 #observations for modelling country
-CStestOutcome <- c(
+CStestOutcome <- list(
         country,
         country,
         algorithm,
@@ -328,28 +328,37 @@ CStestOutcome <- c(
 CStestOutcome
 
 #create dataframe
-CSoutcome <- data.frame(matrix(ncol = 5, nrow = 0))
-CSoutcome <- CSoutcome %>% rbind(testOutcome)
+CSoutcome <- data.frame(matrix(ncol = 6, nrow = 0))
+CSoutcome <- CSoutcome %>% rbind(CStestOutcome)
 colnames(CSoutcome) <- CSoutcomeCols
+CSoutcome$trainCountry  <- CSoutcome$trainCountry %>% as.character()
+CSoutcome$testCountry <- CSoutcome$testCountry%>% as.character()
+CSoutcome$algorithm <- CSoutcome$algorithm%>% as.character()
 
-#add other country observations
+
+#lists of other country outcomes
 for (countryCode in otherCountries){
-        
-        CScAccCommand <- paste0("CS", countryCode, "mets[[1]]")
-        CScKappaCommand <- paste0("CS", countryCode, "mets[[2]]")
-        CScSpecCommand <- paste0("CS", countryCode, "confMat$byClass[3,2]")
-        
-        CSotherOut <- data.frame(paste0(country), 
-                               paste0(countryCode),
-                               paste0(algorithm),
-                               paste0(eval(parse(text = CScAccCommand))),
-                               paste0(eval(parse(text = CScKappaCommand))),
-                               paste0(eval(parse(text = CScSpecCommand))))
-        colnames(CSotherOut) <- CSoutcomeCols
-        CSoutcome <- CSoutcome %>% rbind(CSotherOut)
+        CSoutCommand <- paste0("CS",
+                               countryCode, 
+                               "testOutcome <- list(country,countryCode,",
+                               "algorithm,CS", 
+                               countryCode, 
+                               "mets[[1]], CS", 
+                               countryCode, 
+                               "mets[[2]],CS", 
+                               countryCode, "confMat$byClass[3,2])")
+        eval(parse(text = CSoutCommand))
+}
+
+#lists to dataframe
+for (countryCode in otherCountries){
+        CSbindCommand <- paste0("CSoutcome <- CSoutcome %>% rbind(CS",
+                                countryCode,
+                                "testOutcome)")
+        eval(parse(text = CSbindCommand))
 }
 CSoutcome
 
 filepath <- paste0("output/",country,"_", algorithm, "_chargeStatmetrics.rds")
 
-saveRDS(outcome, file = filepath)
+saveRDS(CSoutcome, file = filepath)
